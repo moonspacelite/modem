@@ -1,0 +1,29 @@
+#!/bin/sh
+#
+# Hotplug handler untuk Fibocom L850-GL
+# VID:PID = 2cb7:0007
+#
+# CATATAN: $PRODUCT format di OpenWrt hotplug adalah "vendorid/productid/version"
+# Harus pakai glob match (case *), bukan exact match (=)
+#
+
+case "$ACTION" in
+    add|bind)
+        case "$PRODUCT" in
+            2cb7/7/*)
+                logger -t "l850gl" "Modem L850GL terdeteksi (PRODUCT=$PRODUCT), menjalankan inisialisasi..."
+                /usr/bin/l850gl-init add &
+                ;;
+        esac
+        ;;
+    remove)
+        case "$PRODUCT" in
+            2cb7/7/*)
+                logger -t "l850gl" "Modem L850GL dicabut (PRODUCT=$PRODUCT), membersihkan interface..."
+                /usr/bin/l850gl-init remove &
+                ;;
+        esac
+        ;;
+esac
+
+exit 0

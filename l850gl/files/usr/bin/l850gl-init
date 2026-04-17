@@ -1,0 +1,127 @@
+#!/bin/sh
+#
+# l850gl-init - Manajemen interface wwan untuk Fibocom L850-GL
+# Dipanggil oleh hotplug (add/remove) dan uci-defaults (boot)
+#
+
+. /lib/functions.sh
+
+APN_DEFAULT="internet"
+NCM_MAC="00:00:11:12:13:14"
+
+ACTION="$1"
+
+logger -t "l850gl" "l850gl-init: action=$ACTION"
+
+# Cek apakah port serial merespons AT command
+verify_at_port() {
+    local port="$1"
+    [ -c "$port" ] || return 1
+    COMMAND='AT' gcom -d "$port" -s /etc/gcom/run_at.gcom 2>/dev/null | grep -q "^OK" && return 0
+    return 1
+}
+
+# Scan semua /dev/ttyACM* dan /dev/ttyUSB* secara dinamis
+# Urutan: ACM dulu (L850-GL di mode NCM pakai ACM), lalu USB
+find_at_port() {
+    local port
+    for port in /dev/ttyACM* /dev/ttyUSB*; do
+        [ -c "$port" ] || continue
+        if verify_at_port "$port"; then
+            echo "$port"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Cari interface NCM berdasarkan MAC address unik L850-GL
+find_ncm_iface() {
+    local netdev addr_file iface
+    local retries=15  # tunggu hingga 15 detik
+
+    local i=0
+    while [ "$i" -lt "$retries" ]; do
+        for netdev in /sys/class/net/*; do
+            [ -d "$netdev" ] || continue
+            addr_file="$netdev/address"
+            if [ -f "$addr_file" ] && [ "$(cat "$addr_file" 2>/dev/null)" = "$NCM_MAC" ]; then
+                iface="$(basename "$netdev")"
+                logger -t "l850gl" "NCM interface ditemukan: $iface"
+                echo "$iface"
+                return 0
+            fi
+        done
+        i=$((i + 1))
+        sleep 1
+    done
+
+    logger -t "l850gl" "ERROR: NCM interface dengan MAC $NCM_MAC tidak ditemukan setelah ${retries}s"
+    return 1
+}
+
+add_interface() {
+    local at_port ncm_iface current_device current_ifname
+
+    at_port="$(find_at_port)"
+    if [ -z "$at_port" ]; then
+        logger -t "l850gl" "ERROR: Tidak ada AT port yang merespons"
+        return 1
+    fi
+    logger -t "l850gl" "Menggunakan AT port: $at_port"
+
+    ncm_iface="$(find_ncm_iface)"
+    if [ -z "$ncm_iface" ]; then
+        logger -t "l850gl" "ERROR: NCM interface tidak ditemukan"
+        return 1
+    fi
+
+    # Cek apakah konfigurasi sudah benar — hindari commit UCI yang tidak perlu
+    current_device="$(uci -q get network.wwan.device)"
+    current_ifname="$(uci -q get network.wwan.ifname)"
+    if [ "$current_device" = "$at_port" ] && [ "$current_ifname" = "$ncm_iface" ]; then
+        logger -t "l850gl" "wwan sudah terkonfigurasi dengan benar, langsung ifup"
+        ifup wwan
+        return 0
+    fi
+
+    # Update konfigurasi UCI
+    uci -q batch <<EOF
+delete network.wwan
+set network.wwan=interface
+set network.wwan.proto=atc
+set network.wwan.device=$at_port
+set network.wwan.ifname=$ncm_iface
+set network.wwan.apn=$APN_DEFAULT
+set network.wwan.pincode=
+set network.wwan.delay=5
+set network.wwan.metric=10
+set network.wwan.auto=0
+commit network
+EOF
+
+    logger -t "l850gl" "UCI network.wwan diperbarui (device=$at_port ifname=$ncm_iface). Menjalankan ifup..."
+    ifup wwan
+}
+
+remove_interface() {
+    ifdown wwan 2>/dev/null
+    uci -q delete network.wwan
+    uci commit network
+    logger -t "l850gl" "Interface wwan dihapus."
+}
+
+case "$ACTION" in
+    add)
+        add_interface
+        ;;
+    remove)
+        remove_interface
+        ;;
+    *)
+        echo "Usage: $0 {add|remove}"
+        exit 1
+        ;;
+esac
+
+exit 0
