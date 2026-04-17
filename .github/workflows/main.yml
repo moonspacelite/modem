@@ -32,5 +32,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: l850gl-package
-          path: bin/packages/*/local/*.ipk
+          path: |
+            bin/packages/x86_64/local/*.ipk
+            bin/packages/*/local/*.ipk
           if-no-files-found: error
