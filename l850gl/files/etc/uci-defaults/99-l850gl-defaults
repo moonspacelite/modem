@@ -2,7 +2,6 @@
 #
 # uci-defaults/99-l850gl-defaults
 # Dijalankan SEKALI saat pertama boot setelah install, lalu file ini dihapus otomatis.
-# Jangan taruh logika yang harus berulang di sini.
 #
 
 # Hanya buat konfigurasi awal jika interface wwan belum ada sama sekali
@@ -13,14 +12,13 @@ if ! uci -q get network.wwan > /dev/null 2>&1; then
     uci set network.wwan.apn='internet'
     uci set network.wwan.delay='15'
     uci set network.wwan.metric='10'
-    uci set network.wwan.auto='0'
+    uci set network.wwan.auto='1'
     uci commit network
 else
     logger -t "l850gl" "uci-defaults: network.wwan sudah ada, skip konfigurasi awal"
 fi
 
 # Coba jalankan init jika modem sudah terpasang saat boot
-# (delay agar driver USB selesai probe)
 (sleep 10 && /usr/bin/l850gl-init add) &
 
 exit 0

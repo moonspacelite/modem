@@ -10,8 +10,16 @@ APN_DEFAULT="internet"
 NCM_MAC="00:00:11:12:13:14"
 
 ACTION="$1"
+LOCKFILE="/var/run/l850gl-init.lock"
 
 logger -t "l850gl" "l850gl-init: action=$ACTION"
+
+# Hindari eksekusi bersamaan (race condition)
+exec 200>"$LOCKFILE"
+flock -n 200 || {
+    logger -t "l850gl" "l850gl-init sudah berjalan, keluar."
+    exit 0
+}
 
 # Cek apakah port serial merespons AT command
 verify_at_port() {
@@ -22,7 +30,6 @@ verify_at_port() {
 }
 
 # Scan semua /dev/ttyACM* dan /dev/ttyUSB* secara dinamis
-# Urutan: ACM dulu (L850-GL di mode NCM pakai ACM), lalu USB
 find_at_port() {
     local port
     for port in /dev/ttyACM* /dev/ttyUSB*; do
@@ -35,10 +42,37 @@ find_at_port() {
     return 1
 }
 
+# Periksa apakah modem dalam mode NCM (return 0 jika ya, 1 jika tidak)
+check_ncm_mode() {
+    local port="$1"
+    local mode
+
+    mode=$(COMMAND='AT+GTUSBMODE?' gcom -d "$port" -s /etc/gcom/getrun_at.gcom 2>/dev/null | grep "+GTUSBMODE:" | awk -F ':' '{print $2}' | tr -d '\r\n ')
+    logger -t "l850gl" "Mode USB saat ini: $mode"
+
+    # Mode 0 = NCM, mode 7 = MBIM, mode 10 = NCM (alternative)
+    if [ "$mode" = "0" ] || [ "$mode" = "10" ]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Atur mode USB ke NCM dan reboot modem
+set_ncm_mode() {
+    local port="$1"
+    logger -t "l850gl" "Mengubah mode USB ke NCM pada $port"
+    COMMAND='AT+GTUSBMODE=0' gcom -d "$port" -s /etc/gcom/run_at.gcom 2>/dev/null
+    sleep 1
+    COMMAND='AT+CFUN=15' gcom -d "$port" -s /etc/gcom/run_at.gcom 2>/dev/null
+    logger -t "l850gl" "Modem akan reboot. Tunggu 20 detik..."
+    sleep 20
+}
+
 # Cari interface NCM berdasarkan MAC address unik L850-GL
 find_ncm_iface() {
     local netdev addr_file iface
-    local retries=15  # tunggu hingga 15 detik
+    local retries=20
 
     local i=0
     while [ "$i" -lt "$retries" ]; do
@@ -70,6 +104,19 @@ add_interface() {
     fi
     logger -t "l850gl" "Menggunakan AT port: $at_port"
 
+    # Periksa mode USB modem
+    if ! check_ncm_mode "$at_port"; then
+        logger -t "l850gl" "Modem tidak dalam mode NCM, akan diubah..."
+        set_ncm_mode "$at_port"
+        at_port="$(find_at_port)"
+        if [ -z "$at_port" ]; then
+            logger -t "l850gl" "ERROR: AT port tidak merespons setelah reboot"
+            return 1
+        fi
+    fi
+
+    sleep 2
+   
     ncm_iface="$(find_ncm_iface)"
     if [ -z "$ncm_iface" ]; then
         logger -t "l850gl" "ERROR: NCM interface tidak ditemukan"
@@ -86,7 +133,7 @@ add_interface() {
     fi
 
     # Update konfigurasi UCI
-    uci -q batch <<EOF
+    uci -q batch <<UCI_EOF
 delete network.wwan
 set network.wwan=interface
 set network.wwan.proto=atc
@@ -94,13 +141,13 @@ set network.wwan.device=$at_port
 set network.wwan.ifname=$ncm_iface
 set network.wwan.apn=$APN_DEFAULT
 set network.wwan.pincode=
-set network.wwan.delay=5
+set network.wwan.delay=15
 set network.wwan.metric=10
-set network.wwan.auto=0
+set network.wwan.auto=1
 commit network
-EOF
+UCI_EOF
 
-    logger -t "l850gl" "UCI network.wwan diperbarui (device=$at_port ifname=$ncm_iface). Menjalankan ifup..."
+    logger -t "l850gl" "UCI network.wwan diperbarui (device=$at_port ifname=$ncm_iface auto=1). Menjalankan ifup..."
     ifup wwan
 }
 
