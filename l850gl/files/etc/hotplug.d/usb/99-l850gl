@@ -1,22 +1,22 @@
 #!/bin/sh
 #
-# Hotplug handler untuk Fibocom L850-GL
-# VID:PID = 2cb7:0007
+# Hotplug handler untuk Fibocom L850-GL (dalam mode NCM)
+# VID:PID = 8087:095a
 #
 
 case "$ACTION" in
     add|bind)
         case "$PRODUCT" in
-            2cb7/0007/*)
-                logger -t "l850gl" "Modem L850GL terdeteksi (PRODUCT=$PRODUCT), menjalankan inisialisasi..."
+            8087/095a/*)
+                logger -t "l850gl" "Modem L850GL (mode NCM) terdeteksi (PRODUCT=$PRODUCT), menjalankan inisialisasi..."
                 /usr/bin/l850gl-init add &
                 ;;
         esac
         ;;
     remove)
         case "$PRODUCT" in
-            2cb7/0007/*)
-                logger -t "l850gl" "Modem L850GL dicabut (PRODUCT=$PRODUCT), membersihkan interface..."
+            8087/095a/*)
+                logger -t "l850gl" "Modem L850GL (mode NCM) dicabut (PRODUCT=$PRODUCT), membersihkan interface..."
                 /usr/bin/l850gl-init remove &
                 ;;
         esac
