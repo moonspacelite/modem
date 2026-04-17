@@ -2,7 +2,7 @@
 #
 # AT commands for Fibocom L850-GL and L860-GL modems
 # 2025-09-06 by mrhaav
-# Revisi: integrasi vendor script, flock, watchdog, validasi device
+# Revisi: integrasi vendor script, flock, TANPA watchdog (uji coba)
 #
 
 [ -n "$INCLUDE_ONLY" ] || {
@@ -53,7 +53,8 @@ update_DHCPv6 () {
 }
 
 subnet_calc () {
-    local IPaddr=$1
+    local IPaddr="$1"
+    [ -z "$IPaddr" ] && { echo "0 0.0.0.0"; return; }
     local A B C D 
     local x y netaddr res subnet gateway
 
@@ -156,20 +157,18 @@ proto_atc_setup () {
 
     json_get_vars device ifname apn pdp pincode auth username password delay atc_debug v6dns_ra $PROTO_DEFAULT_OPTIONS
 
-    # --- Validasi device ---
+    # Validasi device
     if [ ! -c "$device" ]; then
         echo "Error: '$device' is not a valid character device."
         proto_notify_error "$interface" INVALID_DEVICE
         proto_block_restart "$interface"
         return 1
     fi
-    # --- Akhir validasi ---
 
     local custom_at=$(uci -q get network.${interface}.custom_at)
 
     mkdir -p /var/sms/rx
 
-    # Boot LED
     /usr/bin/modem_led boot 2>/dev/null
 
     [ -z "$delay" ] && delay=15
@@ -202,8 +201,7 @@ proto_atc_setup () {
     echo 0 > /var/modem.status
     echo "Initiate modem with interface $ifname"
 
-    # --- Gunakan fungsi vendor ---
-    # Cek apakah modem perlu diubah ke mode NCM (hanya info, karena l850gl-init sudah handle)
+    # Vendor: pastikan mode NCM
     if command -v ensure_ncm_mode >/dev/null 2>&1; then
         if ! ensure_ncm_mode "$device"; then
             echo "Modem sedang reboot untuk mengubah mode. Coba lagi nanti."
@@ -213,7 +211,6 @@ proto_atc_setup () {
         fi
     fi
 
-    # Set error verbose
     if ! at_ok "$device" "AT+CMEE=2"; then
         echo "Gagal mengirim AT+CMEE=2"
         proto_notify_error "$interface" AT_FAILED
@@ -221,7 +218,6 @@ proto_atc_setup () {
         return 1
     fi
 
-    # Tunggu modem siap
     while ! at_ok "$device" "AT"; do
         echo "Modem not ready yet"
         [ "$atc_debug" -gt 1 ] && echo "Device: $device"
@@ -236,7 +232,6 @@ proto_atc_setup () {
             return 1
         fi
     else
-        # Fallback manual
         atOut=$(at_command "$device" "AT+CPIN?" | grep "CPIN:")
         if [ -n "$atOut" ]; then
             atOut=$(echo "$atOut" | awk -F ':' '{print $2}' | tr -d '\r\n ' | sed 's/^ //')
@@ -276,12 +271,10 @@ proto_atc_setup () {
 
     /usr/bin/modem_led config 2>/dev/null
 
-    # Flight mode untuk konfigurasi
     at_ok "$device" "AT+CFUN=4"
     conStatus="offline"
     echo "Configure modem"
 
-    # Informasi manufaktur/model (opsional)
     if command -v get_manufacturer >/dev/null 2>&1; then
         manufactor=$(get_manufacturer "$device")
         model=$(get_model "$device")
@@ -301,68 +294,37 @@ proto_atc_setup () {
         echo "$fw"
     }
 
-    # URC
     at_ok "$device" "AT+CREG=0"
     at_ok "$device" "AT+CGREG=3"
     at_ok "$device" "AT+CEREG=3"
     at_ok "$device" "AT+CGEREP=2,1"
 
-    # PDP context
     at_ok "$device" "AT+CGDCONT=0,\"$pdp\",\"$apn\""
     at_ok "$device" "AT+XGAUTH=0,$auth,\"$username\",\"$password\""
 
-    # DNS dinamis
     at_ok "$device" "AT+XDNS=0,1;+XDNS=0,2"
-
-    # Format IPv6
     at_ok "$device" "AT+CGPIAF=1,1,0,1"
 
-    # SMS config
     at_ok "$device" "AT+CMGF=0"
     at_ok "$device" "AT+CSCS=\"GSM\""
     at_ok "$device" "AT+CNMI=2,1"
 
-    # Signal strength reporting
     at_ok "$device" "AT+XCESQ=1"
     at_ok "$device" "AT+XCESQRC=1"
     at_ok "$device" "AT+XCCINFO=0"
 
-    # Custom AT commands
-    if [ -n "$custom_at" ]; then
+    [ -n "$custom_at" ] && {
         echo "Running custom AT-commands"
         for at_cmd in $custom_at; do
             echo " $at_cmd"
             at_command "$device" "$at_cmd"
         done
-    fi
+    }
 
-    # Aktifkan modem
     echo "Activate modem"
     at_ok "$device" "AT+CFUN=1"
 
     /usr/bin/modem_led searching 2>/dev/null
-
-    # --- Watchdog Background ---
-    (
-        fail_count=0
-        while : ; do
-            sleep 60
-            if ! at_ok "$device" "AT"; then
-                fail_count=$((fail_count+1))
-                logger -t atc "Watchdog: AT failed ($fail_count/3)"
-                if [ $fail_count -ge 3 ]; then
-                    logger -t atc "Watchdog: triggering reconnect"
-                    proto_notify_error "$interface" WATCHDOG
-                    proto_block_restart "$interface"
-                    break
-                fi
-            else
-                fail_count=0
-            fi
-        done
-    ) &
-    WATCHDOG_PID=$!
-    echo $WATCHDOG_PID > /var/run/atc-watchdog.pid
 
     # Loop baca URC
     while read -r URCline; do
@@ -501,11 +463,17 @@ proto_atc_setup () {
                 +XCESQI )
                     [ "$atc_debug" -gt 1 ] && echo "$URCline"
                     rssi=$(echo "$URCvalue" | awk -F ',' '{print $6}')
-                    if [ "$rssi" -ne 255 ] 2>/dev/null; then
-                        rssi=$((rssi*100/97))
+                    if [ -n "$rssi" ] && [ "$rssi" -eq "$rssi" ] 2>/dev/null; then
+                        if [ "$rssi" -ne 255 ]; then
+                            rssi=$((rssi*100/97))
+                        else
+                            rssi=$(echo "$URCvalue" | awk -F ',' '{print $3}')
+                            [ -n "$rssi" ] && [ "$rssi" -eq "$rssi" ] 2>/dev/null && {
+                                [ "$rssi" -ne 255 ] && rssi=$((rssi*100/96)) || rssi=256
+                            } || rssi=256
+                        fi
                     else
-                        rssi=$(echo "$URCvalue" | awk -F ',' '{print $3}')
-                        [ "$rssi" -ne 255 ] 2>/dev/null && rssi=$((rssi*100/96)) || rssi=256
+                        rssi=256
                     fi
                     /usr/bin/modem_led rssi "$rssi" 2>/dev/null
                     ;;
@@ -577,12 +545,6 @@ proto_atc_teardown() {
     local device=$(uci -q get network.$interface.device)
     echo "$interface is disconnected"
     /usr/bin/modem_led off 2>/dev/null
-
-    # Hentikan watchdog
-    if [ -f /var/run/atc-watchdog.pid ]; then
-        kill $(cat /var/run/atc-watchdog.pid) 2>/dev/null
-        rm -f /var/run/atc-watchdog.pid
-    fi
 
     if command -v close_data_channel >/dev/null 2>&1; then
         close_data_channel "$device"
