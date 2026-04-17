@@ -1,8 +1,8 @@
 'use strict';
-
 'require rpc';
 'require form';
 'require network';
+'require uci';
 
 var callFileList = rpc.declare({
     object: 'file',
@@ -12,68 +12,75 @@ var callFileList = rpc.declare({
     filter: function(list, params) {
         var rv = [];
         for (var i = 0; i < list.length; i++) {
-            if (list[i].name.match(/^ttyUSB/) || list[i].name.match(/^ttyACM/))
+            // Hanya ambil character device (type == 'c') dengan nama ttyUSB/ttyACM
+            if (list[i].type == 'c' &&
+                (list[i].name.match(/^ttyUSB/) || list[i].name.match(/^ttyACM/))) {
                 rv.push(params.path + list[i].name);
+            }
         }
         return rv.sort();
     }
 });
 
 network.registerPatternVirtual(/^atc-.+$/);
-network.registerErrorCode('REG_FAILED',  _('Registration failed'));
-network.registerErrorCode('REG_DENIED',  _('Registration denied'));
+network.registerErrorCode('REG_FAILED', _('Registration failed'));
 network.registerErrorCode('PLMN_FAILED', _('Setting PLMN failed'));
-network.registerErrorCode('NO_IFACE',    _('No interface found'));
-network.registerErrorCode('MODEM',       _('Wrong atc script / unsupported modem'));
-network.registerErrorCode('PINmissing',  _('SIM PIN required but not configured'));
-network.registerErrorCode('PINerror',    _('SIM PIN error'));
-network.registerErrorCode('SIMreadfailure', _('Cannot read SIM card'));
+network.registerErrorCode('NO_IFACE', _('No interface found'));
+network.registerErrorCode('MODEM', _('Wrong atc script'));
 
 return network.registerProtocol('atc', {
-
     getI18n: function() {
         return _('AT commands');
     },
-
     getIfname: function() {
         return this._ubus('l3_device') || 'atc-%s'.format(this.sid);
     },
-
     getOpkgPackage: function() {
-        return 'l850gl';
+        return 'atc';
     },
-
     isFloating: function() {
         return true;
     },
-
     isVirtual: function() {
         return true;
     },
-
     getDevices: function() {
         return null;
     },
-
     containsDevice: function(ifname) {
         return (network.getIfnameOf(ifname) == this.getIfname());
     },
-
     renderFormOptions: function(s) {
-        var dev = this.getL3Device() || this.getDevice();
-        var o;
-
-        // --- General tab ---
+        var dev = this.getL3Device() || this.getDevice(), o;
 
         o = s.taboption('general', form.Value, '_modem_device', _('Modem device'));
         o.ucioption = 'device';
-        o.rmempty   = false;
+        o.rmempty = false;
+
+        // Custom load: ambil daftar device yang valid (character device)
+        // dan juga ambil device yang sudah tersimpan di UCI network.wwan (jika ada)
         o.load = function(section_id) {
-            return callFileList('/dev/').then(L.bind(function(devices) {
+            var self = this;
+            return callFileList('/dev/').then(function(devices) {
+                // Isi dropdown dengan device yang valid
                 for (var i = 0; i < devices.length; i++)
-                    this.value(devices[i]);
-                return form.Value.prototype.load.apply(this, [section_id]);
-            }, this));
+                    self.value(devices[i]);
+
+                // Jika ada device yang tersimpan di UCI wwan (hasil scan), tambahkan jika belum ada
+                return uci.load('network').then(function() {
+                    var wwanDevice = uci.get('network', 'wwan', 'device');
+                    if (wwanDevice && devices.indexOf(wwanDevice) == -1) {
+                        // Device dari scan mungkin valid tapi tidak muncul di /dev? (misal symlink)
+                        // Tetap tambahkan sebagai opsi
+                        self.value(wwanDevice);
+                    }
+                    // Panggil load standar
+                    return form.Value.prototype.load.apply(self, [section_id]);
+                });
+            }).catch(function() {
+                // Fallback jika RPC gagal
+                return form.Value.prototype.load.apply(self, [section_id]);
+            });
         };
 
         o = s.taboption('general', form.Value, 'apn', _('APN'));
@@ -89,7 +96,7 @@ return network.registerProtocol('atc', {
         o.datatype = 'and(uinteger,minlength(4),maxlength(8))';
 
         o = s.taboption('general', form.ListValue, 'auth', _('Authentication Type'));
-        o.value('0', _('None'));
+        o.value('0', _('NONE'));
         o.value('1', _('PAP'));
         o.value('2', _('CHAP'));
         o.default = '0';
@@ -104,56 +111,48 @@ return network.registerProtocol('atc', {
         o.password = true;
 
         o = s.taboption('general', form.ListValue, 'pdp', _('PDP Type'));
-        o.value('IP',      _('IPv4'));
-        o.value('IPV4V6',  _('IPv4/IPv6'));
-        o.value('IPV6',    _('IPv6'));
+        o.value('IP', _('IPv4'));
+        o.value('IPV4V6', _('IPv4/IPv6'));
+        o.value('IPV6', _('IPv6'));
         o.default = 'IP';
 
-        o = s.taboption('general', form.ListValue, 'atc_debug',
-            _('AT Debugging'),
-            _('Log AT commands and URC to syslog. "Default" hides cell/signal spam.'));
+        o = s.taboption('general', form.ListValue, 'atc_debug', _('Activate AT debugging'),
+            _('AT commands and unsolicited result codes are displayed in syslog. Default will not display cell and signal info.'));
         o.value('0', _('None'));
         o.value('1', _('Default'));
         o.value('2', _('All'));
-        o.default = '0';
+        o.default = 0;
 
-        // --- Advanced tab ---
-
-        o = s.taboption('advanced', form.Value, 'delay',
-            _('Modem boot timeout'),
-            _('Seconds to wait during boot for the modem to become ready'));
+        o = s.taboption('advanced', form.Value, 'delay', _('Modem boot timeout'),
+            _('Amount of seconds to wait during boot for the modem to become ready'));
         o.placeholder = '15';
-        o.datatype    = 'min(1)';
+        o.datatype = 'min(1)';
 
-        o = s.taboption('advanced', form.Flag, 'v6dns_ra',
-            _('IPv6 DNS via Router Advertisement'));
+        o = s.taboption('advanced', form.Flag, 'v6dns_ra', _('IPv6 DNS servers via Router Advertisement.'));
         o.default = o.disabled;
 
-        o = s.taboption('advanced', form.DynamicList, 'custom_at',
-            _('Custom AT-commands'),
-            _('Executed before the modem is activated. Must start with "AT".'));
+        o = s.taboption('advanced', form.DynamicList, 'custom_at', _('Add custom AT-commands'),
+            _('Custom AT-commands will be run before modem is activated.'));
         s.datatype = 'string';
 
         o = s.taboption('advanced', form.Value, 'mtu', _('Override MTU'));
         o.placeholder = dev ? (dev.getMTU() || '1500') : '1500';
-        o.datatype    = 'max(9200)';
+        o.datatype = 'max(9200)';
 
-        o = s.taboption('advanced', form.Flag, 'defaultroute',
-            _('Use default gateway'),
+        o = s.taboption('advanced', form.Flag, 'defaultroute', _('Use default gateway'),
             _('If unchecked, no default route is configured'));
         o.default = o.enabled;
 
-        o = s.taboption('advanced', form.Value, 'metric', _('Gateway metric'));
+        o = s.taboption('advanced', form.Value, 'metric', _('Use gateway metric'));
         o.placeholder = '0';
-        o.datatype    = 'uinteger';
+        o.datatype = 'uinteger';
         o.depends('defaultroute', '1');
 
-        o = s.taboption('advanced', form.Flag, 'peerdns',
-            _('Use DNS from peer'),
-            _('If unchecked, DNS servers advertised by the modem are ignored'));
+        o = s.taboption('advanced', form.Flag, 'peerdns', _('Use DNS servers advertised by peer'),
+            _('If unchecked, the advertised DNS server addresses are ignored'));
         o.default = o.enabled;
 
-        o = s.taboption('advanced', form.DynamicList, 'dns', _('Custom DNS servers'));
+        o = s.taboption('advanced', form.DynamicList, 'dns', _('Use custom DNS servers'));
         o.depends('peerdns', '0');
         o.datatype = 'ipaddr';
     }
