@@ -23,7 +23,7 @@ jobs:
           # Gunakan target ringan sebagai host build environment
           ARCH: x86_64-24.10.0
           FEEDNAME: local
-          INDEX: 1
+          INDEX: 0
           PACKAGES: l850gl
           V: s
           IGNORE_ERRORS: 0
