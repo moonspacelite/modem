@@ -1,7 +1,4 @@
 #!/bin/sh
-#
-# l850gl-scan - Deteksi modem Fibocom L850-GL secara robust (mirip QModem)
-#
 
 . /lib/functions.sh
 
@@ -9,28 +6,31 @@ NCM_MAC="00:00:11:12:13:14"
 LOCKFILE="/var/run/l850gl-scan.lock"
 
 exec 200>"$LOCKFILE"
-flock -n 200 || {
-    logger -t "l850gl-scan" "Proses scan sudah berjalan, keluar."
-    exit 0
-}
+flock -n 200 || exit 0
 
-# Kirim AT command dengan flock
 at_command() {
     local port="$1"
     local cmd="$2"
-    (
-        flock -x 200
-        COMMAND="$cmd" gcom -d "$port" -s /etc/gcom/getrun_at.gcom 2>/dev/null
-    ) 200>"$port"
+    ( flock -x 200; COMMAND="$cmd" gcom -d "$port" -s /etc/gcom/getrun_at.gcom 2>/dev/null ) 200>"$port"
 }
 
 verify_at_port() {
     local port="$1"
     [ -c "$port" ] || return 1
-    output=$(at_command "$port" "ATI")
-    if echo "$output" | grep -q "OK" && \
-       ( echo "$output" | grep -qi "Fibocom" || echo "$output" | grep -qi "L850" ); then
-        logger -t "l850gl-scan" "Port AT valid: $port"
+    # Coba beberapa kali karena ModemManager mungkin baru lepas
+    for i in 1 2 3; do
+        output=$(at_command "$port" "ATI")
+        if echo "$output" | grep -q "OK"; then
+            if echo "$output" | grep -qi "Fibocom\|L850"; then
+                logger -t "l850gl-scan" "Port AT valid: $port"
+                return 0
+            fi
+        fi
+        sleep 1
+    done
+    # Fallback: cukup cek AT
+    if at_command "$port" "AT" | grep -q "OK"; then
+        logger -t "l850gl-scan" "Port AT fallback (AT only): $port"
         return 0
     fi
     return 1
@@ -48,17 +48,16 @@ find_at_port() {
 }
 
 find_ncm_iface() {
-    local retries=15
-    local i=0
+    local retries=20 i=0
     while [ $i -lt $retries ]; do
         for netdev in /sys/class/net/*; do
             [ -d "$netdev" ] || continue
-            if [ -f "$netdev/address" ] && [ "$(cat "$netdev/address")" = "$NCM_MAC" ]; then
+            [ -f "$netdev/address" ] && [ "$(cat "$netdev/address")" = "$NCM_MAC" ] && {
                 iface="$(basename "$netdev")"
                 logger -t "l850gl-scan" "Interface NCM ditemukan: $iface"
                 echo "$iface"
                 return 0
-            fi
+            }
         done
         i=$((i+1))
         sleep 1

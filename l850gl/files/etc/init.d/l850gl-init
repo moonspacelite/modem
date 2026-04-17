@@ -5,5 +5,5 @@ USE_PROCD=1
 
 boot() {
     logger -t "l850gl" "Init script: menjalankan l850gl-init add setelah boot"
-    (sleep 15 && /usr/bin/l850gl-init add) &
+    (sleep 20 && /usr/bin/l850gl-init add) &
 }

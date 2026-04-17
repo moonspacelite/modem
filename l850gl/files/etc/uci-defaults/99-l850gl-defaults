@@ -9,5 +9,5 @@ if ! uci -q get network.wwan >/dev/null 2>&1; then
     uci set network.wwan.auto='1'
     uci commit network
 fi
-(sleep 10 && /usr/bin/l850gl-init add) &
+(sleep 20 && /usr/bin/l850gl-init add) &
 exit 0

@@ -1,2 +1,0 @@
-# Sembunyikan port AT (ttyACM0) dari ModemManager
-ACTION=="add", SUBSYSTEM=="tty", ENV{ID_VENDOR_ID}=="8087", ENV{ID_MODEL_ID}=="095a", ENV{ID_USB_INTERFACE_NUM}=="00", ENV{ID_MM_PORT_IGNORE}="1"

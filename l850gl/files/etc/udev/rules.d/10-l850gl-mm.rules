@@ -1,0 +1,3 @@
+# Blokir total ModemManager untuk modem Fibocom L850-GL (8087:095a)
+ACTION=="add", SUBSYSTEM=="usb", ENV{ID_VENDOR_ID}=="8087", ENV{ID_MODEL_ID}=="095a", ENV{ID_MM_DEVICE_IGNORE}="1"
+ACTION=="add", SUBSYSTEM=="tty", ENV{ID_VENDOR_ID}=="8087", ENV{ID_MODEL_ID}=="095a", ENV{ID_MM_PORT_IGNORE}="1"
