@@ -66,6 +66,11 @@ define Package/l850gl/install
 	# management binary
 	$(INSTALL_DIR) $(1)/usr/bin
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/usr/bin/l850gl-init $(1)/usr/bin/
+
+    # vendor script
+    $(INSTALL_DIR) $(1)/usr/share/l850gl/vendor
+    $(INSTALL_BIN) $(PKG_BUILD_DIR)/usr/share/l850gl/vendor/fibocom.sh $(1)/usr/share/l850gl/vendor/
+
 endef
 
 define Package/l850gl/postinst
