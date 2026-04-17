@@ -1,52 +1,27 @@
 #!/bin/sh
 #
-# l850gl-init - Manajemen interface wwan untuk Fibocom L850-GL
-# Sekarang hanya sebagai pembungkus untuk l850gl-scan dan ifup/ifdown
+# l850gl-init - wrapper untuk scanner dan ifup/ifdown
 #
-
-. /lib/functions.sh
 
 ACTION="$1"
 LOCKFILE="/var/run/l850gl-init.lock"
 
-logger -t "l850gl" "l850gl-init: action=$ACTION"
-
-# Hindari eksekusi bersamaan
 exec 200>"$LOCKFILE"
-flock -n 200 || {
-    logger -t "l850gl" "l850gl-init sudah berjalan, keluar."
-    exit 0
-}
-
-add_interface() {
-    # Jalankan scanner
-    if /usr/bin/l850gl-scan; then
-        logger -t "l850gl" "Scan berhasil. Menjalankan ifup wwan..."
-        ifup wwan
-    else
-        logger -t "l850gl" "ERROR: Scan modem gagal."
-        return 1
-    fi
-}
-
-remove_interface() {
-    ifdown wwan 2>/dev/null
-    uci -q delete network.wwan
-    uci commit network
-    logger -t "l850gl" "Interface wwan dihapus."
-}
+flock -n 200 || exit 0
 
 case "$ACTION" in
     add)
-        add_interface
+        logger -t "l850gl" "Init: memulai scan dan ifup"
+        /usr/bin/l850gl-scan && ifup wwan
         ;;
     remove)
-        remove_interface
+        logger -t "l850gl" "Init: mematikan wwan"
+        ifdown wwan 2>/dev/null
+        uci -q delete network.wwan
+        uci commit network
         ;;
     *)
         echo "Usage: $0 {add|remove}"
         exit 1
         ;;
 esac
-
-exit 0

@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=l850gl
-PKG_VERSION:=1.0.1
+PKG_VERSION:=1.0.2
 PKG_RELEASE:=1
 PKG_MAINTAINER:=0x <0xhyperbug@gmail.com>
 PKG_LICENSE:=MIT
@@ -20,8 +20,8 @@ endef
 
 define Package/l850gl/description
   Complete plug-and-play solution for Fibocom L850GL modem.
-  Includes proto atc backend (atc.sh, gcom scripts, LuCI UI)
-  and hotplug-based auto-detection/interface management.
+  Includes proto atc backend (atc.sh, gcom scripts, LuCI UI),
+  hotplug-based auto-detection, vendor script, and scanner.
   Just install and plug your modem.
 endef
 
@@ -59,18 +59,22 @@ define Package/l850gl/install
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/etc/uci-defaults/99-l850gl-defaults \
 	               $(1)/etc/uci-defaults/
 
-	# init.d script (untuk memastikan modem diinisialisasi setelah boot)
+	# init.d script
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/etc/init.d/l850gl-init $(1)/etc/init.d/
 
 	# management binary
 	$(INSTALL_DIR) $(1)/usr/bin
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/usr/bin/l850gl-init $(1)/usr/bin/
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/usr/bin/l850gl-scan $(1)/usr/bin/
 
-    # vendor script
-    $(INSTALL_DIR) $(1)/usr/share/l850gl/vendor
-    $(INSTALL_BIN) $(PKG_BUILD_DIR)/usr/share/l850gl/vendor/fibocom.sh $(1)/usr/share/l850gl/vendor/
+	# vendor script
+	$(INSTALL_DIR) $(1)/usr/share/l850gl/vendor
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/usr/share/l850gl/vendor/fibocom.sh $(1)/usr/share/l850gl/vendor/
 
+	# udev rule (blokir ModemManager)
+	$(INSTALL_DIR) $(1)/etc/udev/rules.d
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/etc/udev/rules.d/99-l850gl-mm.rules $(1)/etc/udev/rules.d/
 endef
 
 define Package/l850gl/postinst
@@ -82,6 +86,9 @@ killall -HUP rpcd 2>/dev/null
 
 # Aktifkan init script agar berjalan saat boot
 /etc/init.d/l850gl-init enable 2>/dev/null
+
+# Muat ulang aturan udev
+udevadm control --reload-rules 2>/dev/null
 
 echo "============================================="
 echo " L850GL (Proto ATC) berhasil terinstal."

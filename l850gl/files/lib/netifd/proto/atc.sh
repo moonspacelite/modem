@@ -2,7 +2,7 @@
 #
 # AT commands for Fibocom L850-GL and L860-GL modems
 # 2025-09-06 by mrhaav
-# Revisi: integrasi dengan l850gl-scan dan vendor script
+# Revisi: integrasi vendor script, flock, watchdog, validasi device
 #
 
 [ -n "$INCLUDE_ONLY" ] || {
@@ -342,6 +342,28 @@ proto_atc_setup () {
 
     /usr/bin/modem_led searching 2>/dev/null
 
+    # --- Watchdog Background ---
+    (
+        fail_count=0
+        while : ; do
+            sleep 60
+            if ! at_ok "$device" "AT"; then
+                fail_count=$((fail_count+1))
+                logger -t atc "Watchdog: AT failed ($fail_count/3)"
+                if [ $fail_count -ge 3 ]; then
+                    logger -t atc "Watchdog: triggering reconnect"
+                    proto_notify_error "$interface" WATCHDOG
+                    proto_block_restart "$interface"
+                    break
+                fi
+            else
+                fail_count=0
+            fi
+        done
+    ) &
+    WATCHDOG_PID=$!
+    echo $WATCHDOG_PID > /var/run/atc-watchdog.pid
+
     # Loop baca URC
     while read -r URCline; do
         firstASCII=$(printf "%d" "'${URCline::1}")
@@ -555,6 +577,12 @@ proto_atc_teardown() {
     local device=$(uci -q get network.$interface.device)
     echo "$interface is disconnected"
     /usr/bin/modem_led off 2>/dev/null
+
+    # Hentikan watchdog
+    if [ -f /var/run/atc-watchdog.pid ]; then
+        kill $(cat /var/run/atc-watchdog.pid) 2>/dev/null
+        rm -f /var/run/atc-watchdog.pid
+    fi
 
     if command -v close_data_channel >/dev/null 2>&1; then
         close_data_channel "$device"
