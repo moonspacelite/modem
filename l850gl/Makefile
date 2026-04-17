@@ -59,6 +59,10 @@ define Package/l850gl/install
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/etc/uci-defaults/99-l850gl-defaults \
 	               $(1)/etc/uci-defaults/
 
+	# init.d script (untuk memastikan modem diinisialisasi setelah boot)
+	$(INSTALL_DIR) $(1)/etc/init.d
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/etc/init.d/l850gl-init $(1)/etc/init.d/
+
 	# management binary
 	$(INSTALL_DIR) $(1)/usr/bin
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/usr/bin/l850gl-init $(1)/usr/bin/
@@ -70,6 +74,9 @@ define Package/l850gl/postinst
 rm -f /tmp/luci-indexcache.* 2>/dev/null
 rm -rf /tmp/luci-modulecache/ 2>/dev/null
 killall -HUP rpcd 2>/dev/null
+
+# Aktifkan init script agar berjalan saat boot
+/etc/init.d/l850gl-init enable 2>/dev/null
 
 echo "============================================="
 echo " L850GL (Proto ATC) berhasil terinstal."
