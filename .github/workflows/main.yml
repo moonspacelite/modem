@@ -1,0 +1,36 @@
+name: Build L850GL Package
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build IPK (arch-independent)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build package
+        uses: openwrt/gh-action-sdk@v7
+        env:
+          # PKGARCH=all → tidak perlu arsitektur spesifik
+          # Gunakan target ringan sebagai host build environment
+          ARCH: x86_64-24.10.0
+          FEEDNAME: local
+          INDEX: 1
+          PACKAGES: l850gl
+          V: s
+          IGNORE_ERRORS: 0
+
+      - name: Upload IPK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: l850gl-package
+          path: bin/packages/*/local/*.ipk
+          if-no-files-found: error
