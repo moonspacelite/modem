@@ -1,8 +1,7 @@
 #!/bin/sh
 #
 # AT commands for Fibocom L850-GL and L860-GL modems
-# 2025-09-06 by mrhaav
-# Revisi: integrasi vendor script, flock, TANPA watchdog (uji coba)
+# Revisi: validasi string ketat, perbaiki "out of range"
 #
 
 [ -n "$INCLUDE_ONLY" ] || {
@@ -11,7 +10,6 @@
     init_proto "$@"
 }
 
-# Load vendor script
 VENDOR_SCRIPT="/usr/share/l850gl/vendor/fibocom.sh"
 [ -f "$VENDOR_SCRIPT" ] && . "$VENDOR_SCRIPT"
 
@@ -82,39 +80,43 @@ subnet_calc () {
 }
 
 nb_rat () {
-    local rat_nb=$1
+    local rat_nb="${1:-}"
     case $rat_nb in
-        0|1|3) rat_nb=GSM ;;
-        2|4|5|6) rat_nb=WCDMA ;;
-        7) rat_nb=LTE ;;
-        11) rat_nb=NR ;;
-        13) rat_nb=LTE-ENDC ;;
+        0|1|3) echo "GSM" ;;
+        2|4|5|6) echo "WCDMA" ;;
+        7) echo "LTE" ;;
+        11) echo "NR" ;;
+        13) echo "LTE-ENDC" ;;
+        *) echo "Unknown" ;;
     esac
-    echo "$rat_nb"
 }
 
 CxREG () {
-    local reg_string=$1
+    local reg_string="$1"
     local lac_tac g_cell_id rat reject_cause
 
-    if [ ${#reg_string} -gt 4 ]; then
-        lac_tac=$(echo "$reg_string" | awk -F ',' '{print $2}')
-        g_cell_id=$(echo "$reg_string" | awk -F ',' '{print $3}')
-        rat=$(echo "$reg_string" | awk -F ',' '{print $4}')
-        [ -n "$rat" ] && rat=$(nb_rat "$rat") || reg_string=''
-        reject_cause=$(echo "$reg_string" | awk -F ',' '{print $6}')
-        [ -z "$reject_cause" ] && reject_cause=0
-        if [ "$rat" = 'WCDMA' ]; then
-            reg_string=", RNCid:$(printf '%d' 0x${g_cell_id:: -4}) LAC:$(printf '%d' 0x$lac_tac) CellId:$(printf '%d' 0x${g_cell_id: -4})"
-        fi
-        if [ "${rat::3}" = 'LTE' ]; then
-            reg_string=", TAC:$(printf '%d' 0x$lac_tac) eNodeB:$(printf '%d' 0x${g_cell_id:: -2})-$(printf '%d' 0x${g_cell_id: -2})"
-        fi
-        [ "$reject_cause" -gt 0 ] && reg_string="$reg_string - Reject cause: $reject_cause"
-        [ "$reject_cause" -eq 0 ] && [ "${reg_string::1}" = '0' ] && reg_string=''
-    else
-        reg_string=''
+    if [ ${#reg_string} -le 4 ] || ! echo "$reg_string" | grep -q ','; then
+        echo ""
+        return
     fi
+
+    lac_tac=$(echo "$reg_string" | awk -F ',' '{print $2}')
+    g_cell_id=$(echo "$reg_string" | awk -F ',' '{print $3}')
+    rat=$(echo "$reg_string" | awk -F ',' '{print $4}')
+    reject_cause=$(echo "$reg_string" | awk -F ',' '{print $6}')
+
+    [ -n "$rat" ] && rat=$(nb_rat "$rat")
+    [ -z "$reject_cause" ] && reject_cause=0
+
+    if [ "$rat" = 'WCDMA' ] && [ -n "$g_cell_id" ] && [ -n "$lac_tac" ]; then
+        reg_string=", RNCid:$(printf '%d' 0x${g_cell_id:: -4} 2>/dev/null || echo 0) LAC:$(printf '%d' 0x$lac_tac 2>/dev/null || echo 0) CellId:$(printf '%d' 0x${g_cell_id: -4} 2>/dev/null || echo 0)"
+    elif [ "${rat::3}" = 'LTE' ] && [ -n "$g_cell_id" ] && [ -n "$lac_tac" ]; then
+        reg_string=", TAC:$(printf '%d' 0x$lac_tac 2>/dev/null || echo 0) eNodeB:$(printf '%d' 0x${g_cell_id:: -2} 2>/dev/null || echo 0)-$(printf '%d' 0x${g_cell_id: -2} 2>/dev/null || echo 0)"
+    fi
+
+    [ "$reject_cause" -gt 0 ] && reg_string="$reg_string - Reject cause: $reject_cause"
+    [ "$reject_cause" -eq 0 ] && [ "${reg_string::1}" = '0' ] && reg_string=''
+
     echo "$reg_string"
 }
 
@@ -157,7 +159,6 @@ proto_atc_setup () {
 
     json_get_vars device ifname apn pdp pincode auth username password delay atc_debug v6dns_ra $PROTO_DEFAULT_OPTIONS
 
-    # Validasi device
     if [ ! -c "$device" ]; then
         echo "Error: '$device' is not a valid character device."
         proto_notify_error "$interface" INVALID_DEVICE
@@ -201,7 +202,6 @@ proto_atc_setup () {
     echo 0 > /var/modem.status
     echo "Initiate modem with interface $ifname"
 
-    # Vendor: pastikan mode NCM
     if command -v ensure_ncm_mode >/dev/null 2>&1; then
         if ! ensure_ncm_mode "$device"; then
             echo "Modem sedang reboot untuk mengubah mode. Coba lagi nanti."
@@ -224,7 +224,6 @@ proto_atc_setup () {
         sleep 1
     done
 
-    # Cek SIM
     if command -v handle_pin >/dev/null 2>&1; then
         if ! handle_pin "$device" "$pincode"; then
             proto_notify_error "$interface" SIM_FAILURE
@@ -326,11 +325,12 @@ proto_atc_setup () {
 
     /usr/bin/modem_led searching 2>/dev/null
 
-    # Loop baca URC
     while read -r URCline; do
-        firstASCII=$(printf "%d" "'${URCline::1}")
+        [ -z "$URCline" ] && continue
+        firstASCII=$(printf "%d" "'${URCline::1}" 2>/dev/null || echo 0)
         if [ "$firstASCII" != 13 ] && [ "$firstASCII" != 32 ]; then
             URCcommand=$(echo "$URCline" | awk -F ':' '{print $1}' | tr -d '\r\n')
+            [ -z "$URCcommand" ] && continue
             x=${#URCcommand}
             x=$((x+1))
             URCvalue="${URCline:x}"
