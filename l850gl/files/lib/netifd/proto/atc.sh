@@ -1,7 +1,7 @@
 #!/bin/sh
 #
 # AT commands for Fibocom L850-GL and L860-GL modems
-# Revisi: validasi string ketat, perbaiki "out of range"
+# Revisi: validasi ketat substring, cegah "out of range"
 #
 
 [ -n "$INCLUDE_ONLY" ] || {
@@ -91,6 +91,18 @@ nb_rat () {
     esac
 }
 
+# Fungsi aman untuk mengambil substring: safe_substr <string> <start> <length>
+safe_substr() {
+    local str="$1"
+    local start="$2"
+    local len="$3"
+    if [ -z "$str" ] || [ $start -ge ${#str} ]; then
+        echo ""
+        return
+    fi
+    echo "${str:$start:$len}"
+}
+
 CxREG () {
     local reg_string="$1"
     local lac_tac g_cell_id rat reject_cause
@@ -108,10 +120,14 @@ CxREG () {
     [ -n "$rat" ] && rat=$(nb_rat "$rat")
     [ -z "$reject_cause" ] && reject_cause=0
 
-    if [ "$rat" = 'WCDMA' ] && [ -n "$g_cell_id" ] && [ -n "$lac_tac" ]; then
-        reg_string=", RNCid:$(printf '%d' 0x${g_cell_id:: -4} 2>/dev/null || echo 0) LAC:$(printf '%d' 0x$lac_tac 2>/dev/null || echo 0) CellId:$(printf '%d' 0x${g_cell_id: -4} 2>/dev/null || echo 0)"
-    elif [ "${rat::3}" = 'LTE' ] && [ -n "$g_cell_id" ] && [ -n "$lac_tac" ]; then
-        reg_string=", TAC:$(printf '%d' 0x$lac_tac 2>/dev/null || echo 0) eNodeB:$(printf '%d' 0x${g_cell_id:: -2} 2>/dev/null || echo 0)-$(printf '%d' 0x${g_cell_id: -2} 2>/dev/null || echo 0)"
+    if [ "$rat" = 'WCDMA' ] && [ -n "$g_cell_id" ] && [ ${#g_cell_id} -ge 4 ] && [ -n "$lac_tac" ]; then
+        local rncid=$(safe_substr "$g_cell_id" 0 $((${#g_cell_id}-4)))
+        local cellid=$(safe_substr "$g_cell_id" $((${#g_cell_id}-4)) 4)
+        reg_string=", RNCid:$(printf '%d' 0x${rncid} 2>/dev/null || echo 0) LAC:$(printf '%d' 0x$lac_tac 2>/dev/null || echo 0) CellId:$(printf '%d' 0x${cellid} 2>/dev/null || echo 0)"
+    elif [ "${rat::3}" = 'LTE' ] && [ -n "$g_cell_id" ] && [ ${#g_cell_id} -ge 2 ] && [ -n "$lac_tac" ]; then
+        local enb=$(safe_substr "$g_cell_id" 0 $((${#g_cell_id}-2)))
+        local cell=$(safe_substr "$g_cell_id" $((${#g_cell_id}-2)) 2)
+        reg_string=", TAC:$(printf '%d' 0x$lac_tac 2>/dev/null || echo 0) eNodeB:$(printf '%d' 0x${enb} 2>/dev/null || echo 0)-$(printf '%d' 0x${cell} 2>/dev/null || echo 0)"
     fi
 
     [ "$reject_cause" -gt 0 ] && reg_string="$reg_string - Reject cause: $reject_cause"
@@ -327,13 +343,16 @@ proto_atc_setup () {
 
     while read -r URCline; do
         [ -z "$URCline" ] && continue
-        firstASCII=$(printf "%d" "'${URCline::1}" 2>/dev/null || echo 0)
+        # Hindari error "out of range" dengan safe_substr
+        first_char=$(safe_substr "$URCline" 0 1)
+        [ -z "$first_char" ] && continue
+        firstASCII=$(printf "%d" "'$first_char" 2>/dev/null || echo 0)
         if [ "$firstASCII" != 13 ] && [ "$firstASCII" != 32 ]; then
             URCcommand=$(echo "$URCline" | awk -F ':' '{print $1}' | tr -d '\r\n')
             [ -z "$URCcommand" ] && continue
             x=${#URCcommand}
             x=$((x+1))
-            URCvalue="${URCline:x}"
+            URCvalue=$(safe_substr "$URCline" $x)
             URCvalue=$(echo "$URCvalue" | sed -e 's/"//g' | tr -d '\r\n')
             [ "${URCvalue::1}" = ' ' ] && URCvalue="${URCvalue:1}"
 
